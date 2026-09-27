@@ -1,165 +1,271 @@
-# Simulador de rede de filas (etapa 2: filas em tandem)
+# Simulador de rede de filas
 # Simulacao e Metodos Analiticos - PUCRS
 #
-# Uso: python3 simulador.py
-# Os parametros do modelo ficam no bloco abaixo.
+# Uso: python3 simulador.py [modelo.yml]
+
+import sys
+
+INFINITO = float("inf")
+
+A, C, M = 1664525, 1013904223, 2 ** 32
+
 
 # ---------------------------------------------------------------
-# PARAMETROS DO MODELO (edite aqui)
+# LEITURA DO MODELO
 # ---------------------------------------------------------------
 
-# Cada fila tem: servidores, capacidade, atendimento (min, max) e,
-# se recebe clientes de fora da rede, chegada (min, max).
-FILAS = {
-    "Fila1": {"servidores": 2, "capacidade": 3, "chegada": (1.0, 5.0), "atendimento": (4.0, 5.0)},
-    "Fila2": {"servidores": 1, "capacidade": 5, "atendimento": (1.0, 3.0)},
-}
+def numero(texto):
+    return float(texto) if "." in texto or "e" in texto else int(texto)
 
-# Roteamento: (origem, destino, probabilidade).
-# A soma das probabilidades de saida de uma fila que nao chega a 1.0
-# corresponde a clientes que saem do sistema. Fila sem linha aqui = 100% sai.
-REDE = [
-    ("Fila1", "Fila2", 1.0),
-]
 
-PRIMEIRA_CHEGADA = 2.5      # instante da primeira chegada (filas com chegada externa)
-QTD_ALEATORIOS = 100000     # a simulacao para quando usar todos
+def le_modelo(caminho):
+    modelo = {"arrivals": {}, "queues": {}, "network": {}, "rndnumbers": [],
+              "seeds": [], "rndnumbersPerSeed": 0}
+    secao = None
+    fila = None
+    rota = None
 
-# Gerador congruente linear
-SEMENTE = 42
-A, C, M = 1664525, 1013904223, 2**32
+    for bruta in open(caminho, encoding="utf-8"):
+        linha = bruta.split("#")[0].rstrip()
+        if not linha.strip() or linha.strip().startswith("!"):
+            continue
+        recuo = len(linha) - len(linha.lstrip())
+        texto = linha.strip()
 
-# ---------------------------------------------------------------
-# GERADOR DE NUMEROS PSEUDOALEATORIOS
-# ---------------------------------------------------------------
+        # chave de primeiro nivel: arrivals, queues, network, ...
+        if recuo == 0 and not texto.startswith("-"):
+            secao = texto.split(":")[0].strip()
+            valor = texto.partition(":")[2].strip()
+            if valor:
+                modelo[secao] = numero(valor)
+            fila = None
+            continue
 
-anterior = SEMENTE
-contador = QTD_ALEATORIOS
+        # item de lista
+        if texto.startswith("-"):
+            texto = texto[1:].strip()
+            if secao == "rndnumbers":
+                modelo["rndnumbers"].append(float(texto))
+                continue
+            if secao == "seeds":
+                modelo["seeds"].append(int(texto))
+                continue
+            rota = {}
 
-def next_random():
-    global anterior, contador
-    anterior = (A * anterior + C) % M
-    contador -= 1
-    return anterior / M
+        chave, _, valor = texto.partition(":")
+        chave, valor = chave.strip(), valor.strip()
 
-def sorteia(intervalo):
-    minimo, maximo = intervalo
-    return minimo + (maximo - minimo) * next_random()
+        if secao == "arrivals":
+            modelo["arrivals"][chave] = float(valor)
+        elif secao == "queues":
+            if valor == "":
+                fila = {"servers": 1, "capacity": INFINITO}
+                modelo["queues"][chave] = fila
+            else:
+                fila[chave] = numero(valor)
+        elif secao == "network":
+            rota[chave] = float(valor) if chave == "probability" else valor
+            if len(rota) == 3:
+                modelo["network"].setdefault(rota["source"], []).append(
+                    (rota["target"], rota["probability"]))
 
-# ---------------------------------------------------------------
-# ESTADO DA SIMULACAO
-# ---------------------------------------------------------------
+    return modelo
 
-tempo_global = 0.0
-status = {nome: 0 for nome in FILAS}                              # clientes em cada fila
-perdas = {nome: 0 for nome in FILAS}                              # clientes perdidos por fila
-tempos = {nome: [0.0] * (f["capacidade"] + 1) for nome, f in FILAS.items()}  # tempo acumulado por estado
-escalonador = []                                                  # eventos: (tempo, tipo, origem, destino)
-
-def agenda(tempo, tipo, origem=None, destino=None):
-    escalonador.append((tempo, tipo, origem, destino))
-
-def proximo_evento():
-    ev = min(escalonador, key=lambda e: e[0])
-    escalonador.remove(ev)
-    return ev
-
-def acumula_tempo(tempo):
-    global tempo_global
-    for nome in FILAS:
-        tempos[nome][status[nome]] += tempo - tempo_global
-    tempo_global = tempo
-
-def sorteia_destino(fila):
-    rotas = [(destino, p) for origem, destino, p in REDE if origem == fila]
-    if not rotas:
-        return None                       # sai do sistema
-    if len(rotas) == 1 and rotas[0][1] >= 1.0:
-        return rotas[0][0]                # unico destino, nao gasta aleatorio
-    r = next_random()
-    acumulado = 0.0
-    for destino, p in rotas:
-        acumulado += p
-        if r < acumulado:
-            return destino
-    return None
-
-def agenda_atendimento(tempo, fila):
-    t = tempo + sorteia(FILAS[fila]["atendimento"])
-    destino = sorteia_destino(fila)
-    if destino is None:
-        agenda(t, "SAIDA", origem=fila)
-    else:
-        agenda(t, "PASSAGEM", origem=fila, destino=destino)
-
-# Cliente entra na fila (parte "chegada" do pseudocodigo)
-def entra(tempo, fila):
-    f = FILAS[fila]
-    if status[fila] < f["capacidade"]:
-        status[fila] += 1
-        if status[fila] <= f["servidores"]:
-            agenda_atendimento(tempo, fila)
-    else:
-        perdas[fila] += 1
-
-# Cliente deixa a fila (parte "saida" do pseudocodigo)
-def sai(tempo, fila):
-    status[fila] -= 1
-    if status[fila] >= FILAS[fila]["servidores"]:
-        agenda_atendimento(tempo, fila)
 
 # ---------------------------------------------------------------
-# EVENTOS
+# NUMEROS PSEUDOALEATORIOS
 # ---------------------------------------------------------------
 
-def chegada(tempo, fila):
-    acumula_tempo(tempo)
-    entra(tempo, fila)
-    agenda(tempo + sorteia(FILAS[fila]["chegada"]), "CHEGADA", destino=fila)
+class Gerador:
+    # congruente linear; se receber uma lista pronta, usa ela no lugar
+    def __init__(self, semente=0, quantidade=0, numeros=None):
+        self.numeros = numeros
+        self.posicao = 0
+        self.anterior = semente
+        self.restantes = len(numeros) if numeros else quantidade
 
-def passagem(tempo, origem, destino):
-    acumula_tempo(tempo)
-    sai(tempo, origem)
-    entra(tempo, destino)
+    def proximo(self):
+        self.restantes -= 1
+        if self.numeros is not None:
+            valor = self.numeros[self.posicao]
+            self.posicao += 1
+            return valor
+        self.anterior = (A * self.anterior + C) % M
+        return self.anterior / M
 
-def saida(tempo, fila):
-    acumula_tempo(tempo)
-    sai(tempo, fila)
 
 # ---------------------------------------------------------------
-# LACO PRINCIPAL
+# SIMULACAO
 # ---------------------------------------------------------------
 
-def simula():
-    for nome, f in FILAS.items():
-        if "chegada" in f:
-            agenda(PRIMEIRA_CHEGADA, "CHEGADA", destino=nome)
+# filas com capacidade finita ja comecam com todos os estados no relatorio
+def estados(fila):
+    return 1 if fila["capacity"] == INFINITO else int(fila["capacity"]) + 1
 
-    while contador > 0:
-        tempo, tipo, origem, destino = proximo_evento()
-        if tipo == "CHEGADA":
-            chegada(tempo, destino)
-        elif tipo == "PASSAGEM":
-            passagem(tempo, origem, destino)
+
+class Simulacao:
+    def __init__(self, modelo, gerador):
+        self.filas = modelo["queues"]
+        self.rede = modelo["network"]
+        self.chegadas = modelo["arrivals"]
+        self.rnd = gerador
+
+        self.tempo = 0.0
+        self.status = {nome: 0 for nome in self.filas}
+        self.perdas = {nome: 0 for nome in self.filas}
+        self.tempos = {nome: [0.0] * estados(f) for nome, f in self.filas.items()}
+        self.escalonador = []
+
+    # --- apoio ---
+
+    def sorteia(self, minimo, maximo):
+        return minimo + (maximo - minimo) * self.rnd.proximo()
+
+    def agenda(self, tempo, tipo, origem=None, destino=None):
+        self.escalonador.append((tempo, tipo, origem, destino))
+
+    def proximo_evento(self):
+        evento = min(self.escalonador, key=lambda e: e[0])
+        self.escalonador.remove(evento)
+        return evento
+
+    def acumula_tempo(self, tempo):
+        decorrido = tempo - self.tempo
+        for nome in self.filas:
+            estado = self.status[nome]
+            acumulado = self.tempos[nome]
+            while len(acumulado) <= estado:
+                acumulado.append(0.0)
+            acumulado[estado] += decorrido
+        self.tempo = tempo
+
+    # para qual fila o cliente vai depois de ser atendido (None = sai da rede)
+    def sorteia_destino(self, fila):
+        rotas = self.rede.get(fila, [])
+        if not rotas:
+            return None
+        if len(rotas) == 1 and rotas[0][1] >= 1.0:
+            return rotas[0][0]
+        if self.rnd.restantes == 0:
+            return None
+        sorteado = self.rnd.proximo()
+        acumulado = 0.0
+        for destino, probabilidade in rotas:
+            acumulado += probabilidade
+            if sorteado < acumulado:
+                return destino
+        return None
+
+    def agenda_atendimento(self, tempo, fila):
+        if self.rnd.restantes == 0:
+            return
+        f = self.filas[fila]
+        instante = tempo + self.sorteia(f["minService"], f["maxService"])
+        destino = self.sorteia_destino(fila)
+        if destino is None:
+            self.agenda(instante, "SAIDA", origem=fila)
         else:
-            saida(tempo, origem)
+            self.agenda(instante, "PASSAGEM", origem=fila, destino=destino)
 
-def relatorio():
-    for nome, f in FILAS.items():
-        print("=" * 52)
-        print(f"{nome} (G/G/{f['servidores']}/{f['capacidade']})")
-        if "chegada" in f:
-            print(f"Chegada:     {f['chegada'][0]} .. {f['chegada'][1]}")
-        print(f"Atendimento: {f['atendimento'][0]} .. {f['atendimento'][1]}")
-        print("-" * 52)
-        print(f"{'Estado':>6} {'Tempo acumulado':>20} {'Probabilidade':>16}")
-        for estado, t in enumerate(tempos[nome]):
-            print(f"{estado:>6} {t:>20.4f} {100 * t / tempo_global:>15.2f}%")
-        print(f"Perdas: {perdas[nome]}")
-    print("=" * 52)
-    print(f"Tempo global da simulacao: {tempo_global:.4f}")
-    print(f"Aleatorios usados: {QTD_ALEATORIOS - contador}")
+    # cliente entra na fila
+    def entra(self, tempo, fila):
+        f = self.filas[fila]
+        if self.status[fila] < f["capacity"]:
+            self.status[fila] += 1
+            if self.status[fila] <= f["servers"]:
+                self.agenda_atendimento(tempo, fila)
+        else:
+            self.perdas[fila] += 1
+
+    # cliente termina o atendimento e deixa a fila
+    def sai(self, tempo, fila):
+        self.status[fila] -= 1
+        if self.status[fila] >= self.filas[fila]["servers"]:
+            self.agenda_atendimento(tempo, fila)
+
+    # --- eventos ---
+
+    def chegada(self, tempo, fila):
+        self.acumula_tempo(tempo)
+        self.entra(tempo, fila)
+        if self.rnd.restantes > 0:
+            f = self.filas[fila]
+            self.agenda(tempo + self.sorteia(f["minArrival"], f["maxArrival"]),
+                        "CHEGADA", destino=fila)
+
+    def passagem(self, tempo, origem, destino):
+        self.acumula_tempo(tempo)
+        self.sai(tempo, origem)
+        self.entra(tempo, destino)
+
+    def saida(self, tempo, fila):
+        self.acumula_tempo(tempo)
+        self.sai(tempo, fila)
+
+    # --- laco principal ---
+
+    def executa(self):
+        for nome, instante in self.chegadas.items():
+            self.agenda(instante, "CHEGADA", destino=nome)
+
+        while self.rnd.restantes > 0 and self.escalonador:
+            tempo, tipo, origem, destino = self.proximo_evento()
+            if tipo == "CHEGADA":
+                self.chegada(tempo, destino)
+            elif tipo == "PASSAGEM":
+                self.passagem(tempo, origem, destino)
+            else:
+                self.saida(tempo, origem)
+
+
+# ---------------------------------------------------------------
+# RELATORIO
+# ---------------------------------------------------------------
+
+def descreve(nome, fila):
+    capacidade = fila["capacity"]
+    texto = "G/G/%d" % fila["servers"]
+    if capacidade != INFINITO:
+        texto += "/%d" % capacidade
+    if "minArrival" in fila:
+        texto += ", chegadas entre %g..%g" % (fila["minArrival"], fila["maxArrival"])
+    return "%s (%s, atendimento entre %g..%g)" % (
+        nome, texto, fila["minService"], fila["maxService"])
+
+
+def relatorio(sim):
+    total = sim.tempo
+    for nome, fila in sim.filas.items():
+        print("=" * 56)
+        print(descreve(nome, fila))
+        print("-" * 56)
+        print("%6s %20s %16s" % ("Estado", "Tempo acumulado", "Probabilidade"))
+        for estado, acumulado in enumerate(sim.tempos[nome]):
+            print("%6d %20.4f %15.2f%%" % (estado, acumulado, 100 * acumulado / total))
+        print("Perdas: %d" % sim.perdas[nome])
+    print("=" * 56)
+    print("Tempo global da simulacao: %.4f" % total)
+
+
+# ---------------------------------------------------------------
+
+def main():
+    caminho = sys.argv[1] if len(sys.argv) > 1 else "model.yml"
+    modelo = le_modelo(caminho)
+
+    if modelo["seeds"]:
+        execucoes = [Gerador(semente=s, quantidade=modelo["rndnumbersPerSeed"])
+                     for s in modelo["seeds"]]
+    else:
+        execucoes = [Gerador(numeros=modelo["rndnumbers"])]
+
+    for indice, gerador in enumerate(execucoes):
+        if len(execucoes) > 1:
+            print("\n##### Execucao %d (semente %d)" % (indice + 1, modelo["seeds"][indice]))
+        sim = Simulacao(modelo, gerador)
+        sim.executa()
+        relatorio(sim)
+
 
 if __name__ == "__main__":
-    simula()
-    relatorio()
+    main()

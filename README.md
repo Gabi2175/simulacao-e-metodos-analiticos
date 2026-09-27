@@ -1,76 +1,92 @@
-# Simulador de rede de filas (filas em tandem)
+# Simulador de rede de filas
 
-Simulação e Métodos Analíticos - PUCRS - Etapa 2
+Simulação e Métodos Analíticos - PUCRS - T1
 
-Simulador por eventos discretos escrito em Python, sem dependências externas.
-Nesta etapa ele modela duas filas em tandem, mas a estrutura já aceita uma rede
-de filas com topologia genérica (roteamento por probabilidade).
+Simulador por eventos discretos escrito em Python. Lê o modelo de um arquivo
+`.yml` e simula uma rede de filas com topologia qualquer: cada fila tem seus
+próprios servidores, capacidade e tempo de atendimento, e os clientes são
+roteados entre as filas por probabilidade.
+
+Não usa nenhuma biblioteca externa, só o Python 3.
 
 ## Como executar
 
-Requer apenas Python 3.
-
 ```
-python3 simulador.py
+python3 simulador.py model.yml
 ```
 
-O resultado é impresso no terminal: para cada fila, o tempo acumulado e a
-probabilidade de cada estado (0 até a capacidade) e o número de perdas; ao
-final, o tempo global da simulação.
+Se nenhum arquivo for informado, ele procura por `model.yml` na pasta atual.
 
-## Como configurar o modelo
+O programa imprime, para cada fila, o tempo acumulado e a probabilidade de cada
+estado (de 0 até a capacidade) e o número de clientes perdidos. No final, mostra
+o tempo global da simulação.
 
-Os parâmetros ficam no início de `simulador.py`.
+## O arquivo de modelo
 
-```python
-FILAS = {
-    "Fila1": {"servidores": 2, "capacidade": 3, "chegada": (1.0, 5.0), "atendimento": (4.0, 5.0)},
-    "Fila2": {"servidores": 1, "capacidade": 5, "atendimento": (1.0, 3.0)},
-}
+O formato é o mesmo usado pelo simulador do módulo 3. A linha `!PARAMETERS`
+marca onde começam os dados e tudo que vem depois de `#` é comentário.
+
+```yaml
+!PARAMETERS
+arrivals:
+   Q1: 2.0
+
+queues:
+   Q1:
+      servers: 1
+      minArrival: 2.0
+      maxArrival: 4.0
+      minService: 1.0
+      maxService: 2.0
+   Q2:
+      servers: 2
+      capacity: 5
+      minService: 4.0
+      maxService: 6.0
+
+network:
+-  source: Q1
+   target: Q2
+   probability: 0.2
+
+rndnumbersPerSeed: 100000
+seeds:
+- 42
 ```
 
-- `servidores`: número de servidores da fila.
-- `capacidade`: número máximo de clientes na fila (contando os em atendimento).
-- `atendimento`: intervalo (mínimo, máximo) do tempo de atendimento.
-- `chegada`: intervalo (mínimo, máximo) entre chegadas vindas de fora da rede.
-  Filas que só recebem clientes de outras filas não têm essa chave.
+`arrivals` diz em que instante chega o primeiro cliente vindo de fora, para cada
+fila que recebe chegadas externas. Filas que só recebem clientes de outras filas
+não aparecem aqui e não precisam de `minArrival`/`maxArrival`.
 
-O roteamento entre filas é uma lista de tuplas `(origem, destino, probabilidade)`:
+Em `queues`, `servers` é o número de servidores e `capacity` a capacidade da
+fila. Se `capacity` for omitido, a fila tem capacidade infinita.
+`minService`/`maxService` são o intervalo do tempo de atendimento.
 
-```python
-REDE = [
-    ("Fila1", "Fila2", 1.0),
-]
-```
+`network` é a lista de rotas. Cada rota tem origem, destino e probabilidade. O
+que faltar para somar 1.0 nas rotas de uma fila são os clientes que vão embora
+da rede. No exemplo acima, 80% dos clientes atendidos na Q1 saem do sistema. Uma
+fila sem nenhuma rota manda 100% dos clientes para fora. Uma rota pode apontar
+para a própria fila de origem.
 
-Se a soma das probabilidades de saída de uma fila for menor que 1.0, o restante
-corresponde a clientes que deixam o sistema. Uma fila sem nenhuma linha em `REDE`
-envia 100% dos clientes para fora. Exemplo de rede com três filas:
+Para os números pseudoaleatórios existem duas opções:
 
-```python
-REDE = [
-    ("Fila1", "Fila2", 0.7),   # 70% vai para a Fila2
-    ("Fila1", "Fila3", 0.3),   # 30% vai para a Fila3
-    ("Fila2", "Fila3", 0.5),   # 50% vai para a Fila3, 50% sai do sistema
-    ("Fila3", "Fila1", 0.2),   # 20% volta para a Fila1, 80% sai do sistema
-]
-```
+- `rndnumbersPerSeed` junto com `seeds`: o gerador congruente linear produz essa
+  quantidade de números a partir de cada semente da lista, e a simulação roda uma
+  vez para cada semente.
+- `rndnumbers`: uma lista de números entre 0 e 1 já prontos, usados na ordem em
+  que aparecem. É ignorada se `seeds` estiver no arquivo.
 
-Outros parâmetros:
+A simulação termina quando o último número aleatório é usado.
 
-- `PRIMEIRA_CHEGADA`: instante da primeira chegada (2.5 no caso de teste).
-- `QTD_ALEATORIOS`: quantidade de números pseudoaleatórios; a simulação
-  encerra quando todos forem usados (100000 no caso de teste).
-- `SEMENTE`, `A`, `C`, `M`: parâmetros do gerador congruente linear.
+## Como funciona
 
-## Funcionamento
+São três tipos de evento, como no pseudocódigo da disciplina:
 
-Os eventos são de três tipos, seguindo o pseudocódigo da disciplina:
-
-- `CHEGADA`: cliente chega de fora da rede em uma fila.
+- `CHEGADA`: cliente entra na rede por uma fila.
 - `PASSAGEM`: cliente termina o atendimento em uma fila e entra em outra.
-- `SAIDA`: cliente termina o atendimento e deixa o sistema.
+- `SAIDA`: cliente termina o atendimento e vai embora da rede.
 
-Ao terminar um atendimento, o destino é sorteado conforme `REDE`. Quando há um
-único destino com probabilidade 1.0 nenhum número aleatório é gasto no sorteio.
-O tempo de um intervalo `(min, max)` é obtido por `min + (max - min) * aleatório`.
+Ao terminar um atendimento, sorteia-se um número entre 0 e 1 e vê-se em qual
+faixa de probabilidade ele cai para decidir o destino do cliente. Quando a fila
+tem um único destino possível nenhum número é gasto nesse sorteio. O tempo de um
+intervalo `(min, max)` sai de `min + (max - min) * aleatório`.
