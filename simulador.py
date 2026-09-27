@@ -1,6 +1,7 @@
 # Simulador de rede de filas
 # Simulacao e Metodos Analiticos - PUCRS
-#
+# Estudantes: Christian Kossmann, Anderson Sprenger & Gabriel Dalbem
+# 
 # Uso: python3 simulador.py [modelo.yml]
 
 import sys
