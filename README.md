@@ -1,6 +1,7 @@
 # Simulador de rede de filas
 
 Simulação e Métodos Analíticos - PUCRS - T1
+Estudantes: Christian Kossmann, Anderson Sprenger & Gabriel Dalbem
 
 Simulador por eventos discretos escrito em Python. Lê o modelo de um arquivo
 `.yml` e simula uma rede de filas com topologia qualquer: cada fila tem seus
